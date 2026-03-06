@@ -13,7 +13,7 @@ from .formatter import (
 from .model import Action, AddressFamily, Direction, ParsedConfig
 from .parser import parse_file
 from .topology import render_topology
-from .tracer import TracePacket, format_trace, trace
+from .tracer import TracePacket, format_trace, suggest_counter_rule, trace
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> None:
                          dest="direction", help="Packet direction (default: in)")
     p_trace.add_argument("--icmp-type", type=int, metavar="N",
                          help="ICMP type number")
+    p_trace.add_argument("--suggest-fix", action="store_true",
+                         help="Suggest a rule to achieve the opposite verdict")
 
     args = parser.parse_args(argv)
 
@@ -245,3 +247,5 @@ def cmd_trace(config: ParsedConfig, args: argparse.Namespace) -> None:
 
     result = trace(packet, config)
     print(format_trace(result))
+    if args.suggest_fix:
+        print(suggest_counter_rule(result))

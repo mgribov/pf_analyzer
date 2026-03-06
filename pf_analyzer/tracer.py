@@ -259,6 +259,77 @@ def _match_filter(
 # Formatter
 # ---------------------------------------------------------------------------
 
+def suggest_counter_rule(result: TraceResult) -> str:
+    """Return a formatted section suggesting a minimal rule to flip the verdict."""
+    import ipaddress
+
+    pkt = result.packet
+    opposite = "pass" if result.final_action == Action.BLOCK else "block"
+    verdict_word = "PASS" if opposite == "pass" else "BLOCK"
+
+    # Determine address family and host prefix lengths
+    try:
+        src_obj = ipaddress.ip_address(pkt.src_ip)
+        af = "inet" if src_obj.version == 4 else "inet6"
+        src_prefix = "/32" if src_obj.version == 4 else "/128"
+    except ValueError:
+        af = "inet"
+        src_prefix = "/32"
+
+    try:
+        dst_obj = ipaddress.ip_address(pkt.dst_ip)
+        dst_prefix = "/32" if dst_obj.version == 4 else "/128"
+    except ValueError:
+        dst_prefix = "/32"
+
+    # Build the rule string
+    parts = [opposite, pkt.direction, "quick"]
+    if pkt.interface:
+        parts += ["on", pkt.interface]
+    parts.append(af)
+    parts += ["proto", pkt.proto]
+    parts += ["from", f"{pkt.src_ip}{src_prefix}"]
+    if pkt.src_port is not None:
+        parts += ["port", str(pkt.src_port)]
+    parts += ["to", f"{pkt.dst_ip}{dst_prefix}"]
+    if pkt.dst_port is not None:
+        parts += ["port", str(pkt.dst_port)]
+    if pkt.proto in ("icmp", "icmp6") and pkt.icmp_type is not None:
+        parts += ["icmp-type", str(pkt.icmp_type)]
+    if opposite == "pass":
+        if pkt.proto == "tcp":
+            parts.append("flags S/SA modulate state")
+        else:
+            parts.append("keep state")
+
+    rule_str = " ".join(parts)
+
+    # Determine insertion point
+    if result.final_rule is not None:
+        insert_line = result.final_rule.line_num
+        rule_desc = result.final_rule.raw_text
+    elif result.evaluations:
+        insert_line = result.evaluations[0].rule.line_num
+        rule_desc = None
+    else:
+        insert_line = 1
+        rule_desc = None
+
+    sep = "\u2500" * 72
+    out_lines = [
+        sep,
+        f"Suggested rule to {verdict_word} this packet:",
+        "",
+        f"  {rule_str}",
+        "",
+        f"  Insert BEFORE line {insert_line} in pf.conf",
+    ]
+    if rule_desc is not None:
+        out_lines.append(f"  (that rule: {rule_desc})")
+
+    return "\n".join(out_lines)
+
+
 def format_trace(result: TraceResult) -> str:
     pkt = result.packet
     lines: list[str] = []

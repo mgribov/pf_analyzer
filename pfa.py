@@ -277,6 +277,7 @@ USAGE
                  [--sport PORT] [--dport PORT]
                  [--iface IFACE] [--dir in|out]
                  [--icmp-type N]
+                 [--suggest-fix]
 
 DESCRIPTION
     Simulates PF processing a single packet through the loaded ruleset and
@@ -311,6 +312,10 @@ OPTIONAL OPTIONS
     --dir in|out    Packet direction relative to the firewall (default: in)
     --icmp-type N   ICMP type number (e.g. 8 for echo request, 3 for
                     unreachable).  Omit to wildcard-match all ICMP rules.
+    --suggest-fix   After printing the trace, emit a minimal pf.conf rule
+                    that would produce the opposite verdict for this packet,
+                    along with the line number before which it must be
+                    inserted.
 
 ICMP TYPE REFERENCE
     0   Echo Reply          8   Echo Request
@@ -388,6 +393,24 @@ EXAMPLES
         --src 192.168.4.10 --dst 203.0.113.1 \\
         --proto tcp --dport 80 \\
         --iface re0 --dir in
+
+    # BLOCKED source — suggest a PASS rule to allow it
+    pfa.py trace pf.conf \\
+        --src 168.95.245.1 --dst 5.6.7.8 \\
+        --proto tcp --dport 80 \\
+        --iface ue1 --dir in --suggest-fix
+    # Expected suggestion: pass in quick on ue1 inet proto tcp
+    #   from 168.95.245.1/32 to 5.6.7.8/32 port 80 flags S/SA modulate state
+    #   Insert BEFORE line 98
+
+    # PASSED packet — suggest a BLOCK rule to deny it
+    pfa.py trace pf.conf \\
+        --src 1.2.3.4 --dst 5.6.7.8 \\
+        --proto tcp --dport 80 \\
+        --iface ue1 --dir in --suggest-fix
+    # Expected suggestion: block in quick on ue1 inet proto tcp
+    #   from 1.2.3.4/32 to 5.6.7.8/32 port 80
+    #   Insert BEFORE line 175
 
 NOTES
     - Table membership for file-backed tables (e.g. <tarpit>) cannot be
