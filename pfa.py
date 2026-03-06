@@ -34,6 +34,7 @@ SUBCOMMANDS
     tables      Show table definitions and their addresses
     nat         Show NAT and RDR translation rules
     trace       Simulate PF rule evaluation for a specific packet
+    pcap        Trace packets captured in a PFLOG pcap file
 
 QUICK START
     pfa.py topology  pf.conf
@@ -42,6 +43,7 @@ QUICK START
     pfa.py tables    pf.conf --name quickblock
     pfa.py trace     pf.conf --src 1.2.3.4 --dst 5.6.7.8 \\
                               --proto tcp --dport 80 --iface ue1 --dir in
+    pfa.py pcap      pf.conf pf_blocked.pcap
 
 Run 'pfa.py help <subcommand>' for full options and examples.
 """
@@ -419,6 +421,75 @@ NOTES
       to a specific IP offline; they are treated as matching any address.
     - For non-quick rules the trace shows all evaluations; the final verdict
       reflects the last matching rule, not the first.
+"""
+
+_HELP["pcap"] = """\
+SUBCOMMAND: pcap
+================
+
+USAGE
+    pfa.py pcap <config> <pcap> [--verbose]
+
+DESCRIPTION
+    Reads a PFLOG-format pcap capture (link type 117) and traces each
+    captured packet through the loaded pf.conf ruleset.
+
+    For every packet the output shows:
+
+      - A header line with protocol, source/destination, interface,
+        direction, and the action recorded by pflogd in the capture
+      - The analyzer's verdict (PASS or BLOCK) and the matching rule
+      - Two rule suggestions: a minimal rule to ALLOW the traffic, and
+        a minimal rule to BLOCK it, with insertion line hints
+
+    This makes it easy to audit blocked traffic, validate rule intent,
+    and generate the exact rule text needed to change a verdict.
+
+    The pcap file must use PFLOG link type (117), as produced by pflogd
+    on FreeBSD when PF logs packets via the 'log' keyword or log interface.
+
+ARGUMENTS
+    config      Path to a pf.conf file (required)
+    pcap        Path to a PFLOG .pcap file (required)
+
+OPTIONS
+    --verbose, -v
+        Print the full step-by-step trace output for each packet,
+        showing every rule evaluation (match / no-match) before the
+        final verdict.
+
+PFLOG CAPTURE
+    To produce a suitable capture on a FreeBSD system:
+
+        # Add 'log' to a filter rule in pf.conf, e.g.:
+        block in log quick on $ext_if
+
+        # Capture to file with tcpdump (pflog0 is the pflogd interface):
+        tcpdump -i pflog0 -w /tmp/blocked.pcap
+
+        # Or use pflogd directly:
+        pflogd -f /var/log/pflog
+
+EXAMPLES
+    # Trace all packets in a capture — summary mode
+    pfa.py pcap pf.conf pf_blocked.pcap
+
+    # Trace with full rule-by-rule evaluation per packet
+    pfa.py pcap pf.conf pf_blocked.pcap --verbose
+
+    # Pipe through head to inspect just the first few packets
+    pfa.py pcap pf.conf pf_blocked.pcap | head -40
+
+    # Count how many captured packets would actually PASS vs BLOCK
+    pfa.py pcap pf.conf pf_blocked.pcap | grep 'Verdict'
+
+OUTPUT FORMAT
+    Pkt N: PROTO SRC:sport -> DST:dport on IFACE [dir] (pflog: ACTION, rule R)
+      Verdict : PASS|BLOCK (line L: <matching rule text>)
+      To ALLOW: <minimal pass rule>
+      To BLOCK: <minimal block rule>
+      (To OPPOSITE: insert before line L)
+    ---
 """
 
 # ---------------------------------------------------------------------------

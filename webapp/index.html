@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pf_analyzer Web UI</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #1a1a2e;
+    --bg2:       #16213e;
+    --bg3:       #0f3460;
+    --surface:   #1e2a45;
+    --border:    #2d3f5e;
+    --text:      #e0e0e0;
+    --muted:     #8892a4;
+    --accent:    #4a9eff;
+    --pass:      #58a6ff;
+    --block:     #f85149;
+    --green:     #3fb950;
+    --term-bg:   #0d1117;
+    --radius:    6px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--accent); flex: 1; }
+
+  #status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    transition: color .2s;
+  }
+  #status-badge.loaded { color: var(--text); }
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    transition: background .2s;
+  }
+  #status-badge.loaded #status-dot { background: var(--green); }
+
+  /* ── Upload zone ── */
+  #upload-zone {
+    margin: 16px 20px;
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    text-align: center;
+    color: var(--muted);
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    position: relative;
+  }
+  #upload-zone:hover, #upload-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(74,158,255,.06);
+    color: var(--text);
+  }
+  #upload-zone input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+  #upload-zone .upload-icon { font-size: 28px; margin-bottom: 6px; }
+  #upload-zone .upload-hint { font-size: 12px; margin-top: 4px; }
+
+  /* ── Tab bar ── */
+  #tab-bar {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    gap: 2px;
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    transition: color .15s, border-color .15s;
+    margin-bottom: -1px;
+  }
+  .tab-btn:disabled { opacity: .35; cursor: default; }
+  .tab-btn:not(:disabled):hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── Main content area ── */
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 20px;
+    gap: 12px;
+  }
+
+  /* ── Tab panels ── */
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Forms ── */
+  .form-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+    margin-bottom: 12px;
+  }
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .form-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+  input[type=text], input[type=number], select {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 13px;
+    padding: 6px 10px;
+    outline: none;
+    transition: border-color .15s;
+    min-width: 120px;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus {
+    border-color: var(--accent);
+  }
+  input[type=number] { width: 90px; }
+  select { cursor: pointer; }
+
+  .checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 8px;
+  }
+  .checkbox-group input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+  .checkbox-group label { font-size: 13px; cursor: pointer; color: var(--text); }
+
+  /* ── Run button ── */
+  .run-btn {
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 20px;
+    transition: opacity .15s;
+    align-self: flex-end;
+    margin-bottom: 0;
+  }
+  .run-btn:disabled { opacity: .4; cursor: default; }
+  .run-btn:not(:disabled):hover { opacity: .85; }
+
+  /* ── Output area ── */
+  #output-container {
+    flex: 1;
+    background: var(--term-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: auto;
+    min-height: 300px;
+  }
+  #output {
+    margin: 0;
+    padding: 14px 16px;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    white-space: pre;
+    color: #c9d1d9;
+    min-height: 100%;
+  }
+  #output .pass  { color: var(--pass); font-weight: 600; }
+  #output .block { color: var(--block); font-weight: 600; }
+  #output .err   { color: var(--block); font-style: italic; }
+  #output .muted { color: var(--muted); }
+
+  /* ── Spinner ── */
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <h1>pf_analyzer Web UI</h1>
+  <div id="status-badge">
+    <span id="status-dot"></span>
+    <span id="status-text">No config loaded</span>
+  </div>
+</header>
+
+<!-- ── Upload zone ── -->
+<div id="upload-zone" role="button" aria-label="Upload pf.conf">
+  <input type="file" id="file-input" accept=".conf,text/plain" aria-label="Select pf.conf file">
+  <div class="upload-icon">📂</div>
+  <div>Drop <code>pf.conf</code> here or click to upload</div>
+  <div class="upload-hint">Accepts plain-text pf.conf files</div>
+</div>
+
+<!-- ── Tab bar ── -->
+<div id="tab-bar">
+  <button class="tab-btn active" data-tab="topology" disabled>Topology</button>
+  <button class="tab-btn" data-tab="rules" disabled>Rules</button>
+  <button class="tab-btn" data-tab="tables" disabled>Tables</button>
+  <button class="tab-btn" data-tab="nat" disabled>NAT</button>
+  <button class="tab-btn" data-tab="trace" disabled>Trace</button>
+</div>
+
+<!-- ── Main ── -->
+<main>
+
+  <!-- Topology -->
+  <div class="tab-panel active" id="panel-topology">
+    <div class="form-row">
+      <button class="run-btn" data-cmd="topology" disabled>Run</button>
+    </div>
+  </div>
+
+  <!-- Rules -->
+  <div class="tab-panel" id="panel-rules">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="rules-iface">Interface</label>
+        <input type="text" id="rules-iface" placeholder="e.g. ue1 or ext">
+      </div>
+      <div class="form-group">
+        <label for="rules-action">Action</label>
+        <select id="rules-action">
+          <option value="">(any)</option>
+          <option value="pass">pass</option>
+          <option value="block">block</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>&nbsp;</label>
+        <div class="checkbox-group">
+          <input type="checkbox" id="rules-expanded">
+          <label for="rules-expanded">Expanded</label>
+        </div>
+      </div>
+      <button class="run-btn" data-cmd="rules" disabled>Run</button>
+    </div>
+  </div>
+
+  <!-- Tables -->
+  <div class="tab-panel" id="panel-tables">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="tables-name">Table name</label>
+        <input type="text" id="tables-name" placeholder="leave blank for all">
+      </div>
+      <button class="run-btn" data-cmd="tables" disabled>Run</button>
+    </div>
+  </div>
+
+  <!-- NAT -->
+  <div class="tab-panel" id="panel-nat">
+    <div class="form-row">
+      <button class="run-btn" data-cmd="nat" disabled>Run</button>
+    </div>
+  </div>
+
+  <!-- Trace -->
+  <div class="tab-panel" id="panel-trace">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="trace-src">Src IP <span style="color:var(--block)">*</span></label>
+        <input type="text" id="trace-src" placeholder="e.g. 1.2.3.4">
+      </div>
+      <div class="form-group">
+        <label for="trace-dst">Dst IP <span style="color:var(--block)">*</span></label>
+        <input type="text" id="trace-dst" placeholder="e.g. 5.6.7.8">
+      </div>
+      <div class="form-group">
+        <label for="trace-proto">Proto</label>
+        <select id="trace-proto">
+          <option value="tcp">tcp</option>
+          <option value="udp">udp</option>
+          <option value="icmp">icmp</option>
+          <option value="icmp6">icmp6</option>
+          <option value="gre">gre</option>
+          <option value="esp">esp</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="trace-sport">Src port</label>
+        <input type="number" id="trace-sport" placeholder="opt" min="1" max="65535">
+      </div>
+      <div class="form-group">
+        <label for="trace-dport">Dst port</label>
+        <input type="number" id="trace-dport" placeholder="opt" min="1" max="65535">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="trace-iface">Interface</label>
+        <input type="text" id="trace-iface" placeholder="e.g. ue1">
+      </div>
+      <div class="form-group">
+        <label for="trace-dir">Direction</label>
+        <select id="trace-dir">
+          <option value="in">in</option>
+          <option value="out">out</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="trace-icmp-type">ICMP type</label>
+        <input type="number" id="trace-icmp-type" placeholder="opt" min="0" max="255">
+      </div>
+      <div class="form-group">
+        <label>&nbsp;</label>
+        <div class="checkbox-group">
+          <input type="checkbox" id="trace-suggest">
+          <label for="trace-suggest">Suggest fix</label>
+        </div>
+      </div>
+      <button class="run-btn" data-cmd="trace" disabled>Run</button>
+    </div>
+  </div>
+
+  <!-- Output -->
+  <div id="output-container">
+    <pre id="output"><span class="muted">Upload a pf.conf to get started.</span></pre>
+  </div>
+
+</main>
+
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+let loaded = false;
+
+// ── Refs ───────────────────────────────────────────────────────────────────
+const uploadZone  = document.getElementById('upload-zone');
+const fileInput   = document.getElementById('file-input');
+const statusBadge = document.getElementById('status-badge');
+const statusText  = document.getElementById('status-text');
+const output      = document.getElementById('output');
+const tabBtns     = document.querySelectorAll('.tab-btn');
+const panels      = document.querySelectorAll('.tab-panel');
+const runBtns     = document.querySelectorAll('.run-btn');
+
+// ── Upload ─────────────────────────────────────────────────────────────────
+uploadZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  uploadZone.classList.add('drag-over');
+});
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+});
+
+async function uploadFile(file) {
+  showSpinner('Uploading…');
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res  = await fetch('/api/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) { showError(data.error || 'Upload failed'); return; }
+    onLoaded(data);
+    runCmd('topology');
+  } catch (e) {
+    showError('Network error: ' + e.message);
+  }
+}
+
+function onLoaded(data) {
+  loaded = true;
+  statusBadge.classList.add('loaded');
+  statusText.textContent =
+    `${data.filename} — ${data.filter_rules} filter / ${data.nat_rules} NAT / ${data.tables} tables`;
+  tabBtns.forEach(b => b.disabled = false);
+  runBtns.forEach(b => b.disabled = false);
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+tabBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    tabBtns.forEach(b => b.classList.remove('active'));
+    panels.forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    const panel = document.getElementById('panel-' + btn.dataset.tab);
+    if (panel) panel.classList.add('active');
+    clearOutput();
+  });
+});
+
+// ── Run buttons ────────────────────────────────────────────────────────────
+runBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    runCmd(btn.dataset.cmd);
+  });
+});
+
+// Enter key triggers run in form inputs
+document.querySelectorAll('input[type=text], input[type=number], select').forEach(el => {
+  el.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const panel = el.closest('.tab-panel');
+    if (!panel) return;
+    const btn = panel.querySelector('.run-btn');
+    if (btn && !btn.disabled) runCmd(btn.dataset.cmd);
+  });
+});
+
+// ── Command dispatch ───────────────────────────────────────────────────────
+async function runCmd(cmd) {
+  showSpinner('Running…');
+  try {
+    let res;
+    switch (cmd) {
+      case 'topology':
+        res = await fetch('/api/topology');
+        break;
+      case 'rules': {
+        const params = new URLSearchParams();
+        const iface  = document.getElementById('rules-iface').value.trim();
+        const action = document.getElementById('rules-action').value;
+        const exp    = document.getElementById('rules-expanded').checked;
+        if (iface)  params.set('interface', iface);
+        if (action) params.set('action', action);
+        if (exp)    params.set('expanded', '1');
+        res = await fetch('/api/rules?' + params);
+        break;
+      }
+      case 'tables': {
+        const params = new URLSearchParams();
+        const name   = document.getElementById('tables-name').value.trim();
+        if (name) params.set('name', name);
+        res = await fetch('/api/tables?' + params);
+        break;
+      }
+      case 'nat':
+        res = await fetch('/api/nat');
+        break;
+      case 'trace': {
+        const body = {
+          src:        document.getElementById('trace-src').value.trim(),
+          dst:        document.getElementById('trace-dst').value.trim(),
+          proto:      document.getElementById('trace-proto').value,
+          direction:  document.getElementById('trace-dir').value,
+          suggest_fix: document.getElementById('trace-suggest').checked,
+        };
+        const sport    = document.getElementById('trace-sport').value;
+        const dport    = document.getElementById('trace-dport').value;
+        const iface    = document.getElementById('trace-iface').value.trim();
+        const icmpType = document.getElementById('trace-icmp-type').value;
+        if (sport)    body.sport     = parseInt(sport, 10);
+        if (dport)    body.dport     = parseInt(dport, 10);
+        if (iface)    body.iface     = iface;
+        if (icmpType) body.icmp_type = parseInt(icmpType, 10);
+        res = await fetch('/api/trace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        break;
+      }
+      default:
+        showError('Unknown command: ' + cmd);
+        return;
+    }
+    const data = await res.json();
+    if (!res.ok) { showError(data.error || 'Request failed'); return; }
+    showOutput(data.output || '(no output)');
+  } catch (e) {
+    showError('Network error: ' + e.message);
+  }
+}
+
+// ── Output helpers ─────────────────────────────────────────────────────────
+function clearOutput() {
+  output.innerHTML = '';
+}
+
+function showSpinner(msg) {
+  output.innerHTML = `<span class="muted"><span class="spinner"></span>${escHtml(msg)}</span>`;
+}
+
+function showError(msg) {
+  output.innerHTML = `<span class="err">Error: ${escHtml(msg)}</span>`;
+}
+
+function showOutput(text) {
+  // Colorise PASS / BLOCK verdict words
+  const html = escHtml(text)
+    .replace(/\bPASS\b/g,  '<span class="pass">PASS</span>')
+    .replace(/\bBLOCK\b/g, '<span class="block">BLOCK</span>');
+  output.innerHTML = html;
+}
+
+function escHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+</script>
+</body>
+</html>

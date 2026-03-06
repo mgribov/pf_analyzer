@@ -83,13 +83,17 @@ The `pf_analyzer/` package is a pure-Python (stdlib only, 3.10+) implementation.
 ### Running
 
 ```sh
-python3 -m pf_analyzer topology pf.conf
-python3 -m pf_analyzer rules   pf.conf [--interface ext] [--action pass|block] [--expanded]
-python3 -m pf_analyzer tables  pf.conf [--name tablename]
-python3 -m pf_analyzer nat     pf.conf
-python3 -m pf_analyzer trace   pf.conf --src IP --dst IP --proto tcp|udp|icmp \
-                                [--sport PORT] [--dport PORT] [--iface IFACE] [--dir in|out]
+python3 pfa.py topology pf.conf.sample
+python3 pfa.py rules    pf.conf.sample [--interface ext] [--action pass|block] [--expanded]
+python3 pfa.py tables   pf.conf.sample [--name tablename]
+python3 pfa.py nat      pf.conf.sample
+python3 pfa.py trace    pf.conf.sample --src IP --dst IP --proto tcp|udp|icmp \
+                        [--sport PORT] [--dport PORT] [--iface IFACE] [--dir in|out] \
+                        [--suggest-fix]
+python3 pfa.py pcap     pf.conf.sample pf_blocked.pcap [--verbose]
 ```
+
+`pfa.py` is the recommended entry point; `python3 -m pf_analyzer` also works.
 
 ### Module layout
 
@@ -102,7 +106,17 @@ python3 -m pf_analyzer trace   pf.conf --src IP --dst IP --proto tcp|udp|icmp \
 | `tracer.py` | PF packet-evaluation semantics: RDR → filter (quick=stop, non-quick=last-wins) → NAT |
 | `topology.py` | Zone/interface discovery by macro-naming conventions; ASCII box-drawing output |
 | `formatter.py` | `make_table()`, `format_filter_rule()`, rule/table summaries |
-| `cli.py` | `argparse` CLI, five subcommands |
+| `pcap.py` | PFLOG pcap parser (link type 117); `PflogPacket` dataclass; stdlib `struct` only |
+| `cli.py` | `argparse` CLI, six subcommands (topology/rules/tables/nat/trace/pcap) |
+
+### PFLOG pcap format notes
+
+- Global pcap header: 24 bytes, magic `0xa1b2c3d4` (LE) or `0xd4c3b2a1` (BE), link type 117
+- Per-packet record: 16-byte pcap header + pflog frame
+- PFLOG frame layout: `[0]` hdr_len, `[1]` af, `[2]` action, `[3]` reason, `[4:20]` ifname, `[20:36]` ruleset, `[36:40]` rulenr (big-endian), `[60]` direction
+- **IP payload alignment**: IP header starts at `(hdr_len + 3) & ~3` (next 4-byte boundary), not at `hdr_len` directly — FreeBSD pflog pads to 4-byte alignment
+- `af` values: 2=IPv4, 28/30=IPv6 (FreeBSD/macOS), 10=IPv6 (Linux)
+- Action values: 0=pass, 1=block, 2=scrub, 4=nat, 6=binat, 8=rdr
 
 ### Parser notes
 
@@ -117,3 +131,4 @@ python3 -m pf_analyzer trace   pf.conf --src IP --dst IP --proto tcp|udp|icmp \
 - Rule ordering is semantically significant in PF — the parser preserves insertion order
 - `($iface)` and `($iface:0)` NAT targets are stored symbolically; actual IP is runtime-dependent
 - File-backed tables (`persist file "/etc/tarpit"`) have no inline addresses; the tracer notes this
+- pcap verdict mismatches vs pflog action are expected when config differs from the one used during capture
