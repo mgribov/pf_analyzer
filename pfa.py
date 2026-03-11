@@ -35,6 +35,7 @@ SUBCOMMANDS
     nat         Show NAT and RDR translation rules
     trace       Simulate PF rule evaluation for a specific packet
     pcap        Trace packets captured in a PFLOG pcap file
+    analyze     Aggregate stats + anomaly detection on any pcap (no pf.conf needed)
 
 QUICK START
     pfa.py topology  pf.conf
@@ -44,6 +45,8 @@ QUICK START
     pfa.py trace     pf.conf --src 1.2.3.4 --dst 5.6.7.8 \\
                               --proto tcp --dport 80 --iface ue1 --dir in
     pfa.py pcap      pf.conf pf_blocked.pcap
+    pfa.py analyze   pf_blocked.pcap
+    pfa.py analyze   capture.pcap --top 5 --scan-threshold 5
 
 Run 'pfa.py help <subcommand>' for full options and examples.
 """
@@ -421,6 +424,94 @@ NOTES
       to a specific IP offline; they are treated as matching any address.
     - For non-quick rules the trace shows all evaluations; the final verdict
       reflects the last matching rule, not the first.
+"""
+
+_HELP["analyze"] = """\
+SUBCOMMAND: analyze
+===================
+
+USAGE
+    pfa.py analyze <pcap> [--top N] [--scan-threshold N]
+                          [--sweep-threshold N] [--flood-pps N]
+
+DESCRIPTION
+    Reads any tcpdump-format pcap file and produces a human-readable
+    aggregate analysis report without requiring a pf.conf ruleset.
+
+    Supported link types:
+      DLT_NULL (0)      — BSD loopback
+      DLT_EN10MB (1)    — Ethernet (handles 802.1Q VLAN tags)
+      DLT_LOOP (12)     — BSD loopback
+      DLT_RAW (101)     — Raw IP (IPv4 or IPv6)
+      DLT_PFLOG (117)   — FreeBSD pflog (adds PFLOG-specific sections)
+      DLT_IPV4 (228)    — Raw IPv4
+
+    The report includes:
+      - Capture metadata: file, link type, duration, packet count
+      - Protocol breakdown (TCP / UDP / ICMP / …)
+      - Top source IPs, top destination IPs
+      - Top destination ports with well-known service names
+      - Top conversations (src → dst on port)
+      - PFLOG action / interface / direction tables (PFLOG captures only)
+      - Anomaly detection results (see ANOMALY DETECTORS below)
+
+ANOMALY DETECTORS
+    PORT_SCAN       One source probes N distinct ports on the same dst host
+    SYN_SCAN        SYN-only packets (SYN=1, ACK=0) to N ports per src→dst
+    HOST_SWEEP      One source contacts the same port across N distinct hosts
+    FLOOD           A source sends more than --flood-pps packets in one second
+    SUSP_PORT       Traffic on known-bad ports (Metasploit, Back Orifice, …)
+    ICMP_FLOOD      ICMP rate exceeds 20 pps from a single source
+    ICMP_SWEEP      ICMP sent to more than 5 distinct hosts by one source
+    CLEARTEXT       Traffic on unencrypted-protocol ports (Telnet, FTP, …)
+
+ARGUMENTS
+    pcap            Path to any supported pcap file (required)
+
+OPTIONS
+    --top N             Number of top entries per table (default: 10)
+    --scan-threshold N  Distinct ports to flag as a port scan (default: 10)
+    --sweep-threshold N Distinct hosts to flag as a host sweep (default: 5)
+    --flood-pps N       Packets/sec to flag as a flood (default: 100)
+
+EXAMPLES
+    # Full report on a PFLOG capture
+    pfa.py analyze pf_blocked.pcap
+
+    # Show only top 5 entries per table
+    pfa.py analyze pf_blocked-big.pcap --top 5
+
+    # Lower thresholds to catch stealthy scans
+    pfa.py analyze capture.pcap --scan-threshold 5 --sweep-threshold 3
+
+    # Detect lower-volume floods (e.g. in a lab capture)
+    pfa.py analyze capture.pcap --flood-pps 20
+
+    # Analyze a plain Ethernet tcpdump capture
+    pfa.py analyze /tmp/eth.pcap
+
+OUTPUT FORMAT
+    ╔════════════════════════════════════════════════════════════╗
+    ║                   PCAP ANALYSIS REPORT                    ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    File       : pf_blocked.pcap  (PFLOG / link type 117)
+    Duration   : 45.3 s  (2024-01-15 10:23:11 UTC → 10:23:56 UTC)
+    Packets    : 1,234 total  (1,230 decoded, 4 errors)
+    IP versions: IPv4: 1,210  IPv6: 20
+
+    PROTOCOL BREAKDOWN
+    +----------+-------+-------+
+    | Protocol | Count |     % |
+    ...
+
+    ANOMALIES DETECTED  (3 found)
+    +------+-----------+------------------------------------------+…
+    | Sev  | Category  | Description                              |…
+    +------+-----------+------------------------------------------+…
+    | HIGH | PORT_SCAN | 1.2.3.4 probed 52 ports on 5.6.7.8      |…
+    | HIGH | FLOOD     | 8.8.8.8: 145 pps peak (threshold: 100)  |…
+    | MED  | CLEARTEXT | Unencrypted Telnet traffic on port 23    |…
 """
 
 _HELP["pcap"] = """\

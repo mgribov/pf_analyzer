@@ -91,6 +91,9 @@ python3 pfa.py trace    pf.conf.sample --src IP --dst IP --proto tcp|udp|icmp \
                         [--sport PORT] [--dport PORT] [--iface IFACE] [--dir in|out] \
                         [--suggest-fix]
 python3 pfa.py pcap     pf.conf.sample pf_blocked.pcap [--verbose]
+python3 pfa.py pcap     pf.conf.sample robin_broken_ipv6_tunnel.pcap [--verbose]
+python3 pfa.py analyze  pf_blocked.pcap [--top N] [--scan-threshold N] \
+                        [--sweep-threshold N] [--flood-pps N]
 ```
 
 `pfa.py` is the recommended entry point; `python3 -m pf_analyzer` also works.
@@ -106,8 +109,24 @@ python3 pfa.py pcap     pf.conf.sample pf_blocked.pcap [--verbose]
 | `tracer.py` | PF packet-evaluation semantics: RDR → filter (quick=stop, non-quick=last-wins) → NAT |
 | `topology.py` | Zone/interface discovery by macro-naming conventions; ASCII box-drawing output |
 | `formatter.py` | `make_table()`, `format_filter_rule()`, rule/table summaries |
-| `pcap.py` | PFLOG pcap parser (link type 117); `PflogPacket` dataclass; stdlib `struct` only |
-| `cli.py` | `argparse` CLI, six subcommands (topology/rules/tables/nat/trace/pcap) |
+| `pcap.py` | Multi-DLT pcap parser; `PflogPacket` + `GenericPacket` dataclasses; `read_pflog_pcap()` + `read_pcap()`; stdlib `struct` only |
+| `analyze.py` | Aggregate stats (`AnalysisReport`) + anomaly detectors (`Anomaly`); `analyze_packets()`, `format_report()` |
+| `cli.py` | `argparse` CLI, seven subcommands (topology/rules/tables/nat/trace/pcap/analyze) |
+
+### pcap.py — multi-DLT support
+
+`read_pcap(path) -> (list[GenericPacket], link_type)` accepts any of:
+
+| DLT | Value | Parsing strategy |
+|-----|-------|-----------------|
+| DLT_NULL / DLT_LOOP | 0 / 12 | 4-byte host-order AF field → IPv4/IPv6 |
+| DLT_EN10MB | 1 | 14-byte Ethernet header; strips 802.1Q VLAN tags |
+| DLT_RAW / DLT_IPV4 | 101 / 228 | First nibble selects IPv4 or IPv6 |
+| DLT_PFLOG | 117 | pflog frame → all PFLOG fields + IP |
+
+`GenericPacket` fields: `pkt_num`, `ts_sec/usec`, `pkt_len`, `cap_len`, `ip_version`, `src_ip`, `dst_ip`, `proto_num/name`, `sport`, `dport`, `tcp_flags` (raw byte, TCP only), PFLOG-only: `pflog_action/name`, `ifname`, `direction`, `rule_num`. `parse_error` is set on decode failure.
+
+`read_pflog_pcap()` is retained for backward compatibility (returns `list[PflogPacket]`).
 
 ### PFLOG pcap format notes
 
@@ -117,6 +136,22 @@ python3 pfa.py pcap     pf.conf.sample pf_blocked.pcap [--verbose]
 - **IP payload alignment**: IP header starts at `(hdr_len + 3) & ~3` (next 4-byte boundary), not at `hdr_len` directly — FreeBSD pflog pads to 4-byte alignment
 - `af` values: 2=IPv4, 28/30=IPv6 (FreeBSD/macOS), 10=IPv6 (Linux)
 - Action values: 0=pass, 1=block, 2=scrub, 4=nat, 6=binat, 8=rdr
+
+### analyze.py — anomaly detectors
+
+All detectors are pure functions `(packets: list[GenericPacket], threshold) -> list[Anomaly]`:
+
+| Detector | Category | Default threshold |
+|----------|----------|------------------|
+| `detect_port_scans` | `PORT_SCAN` | ≥10 distinct dst ports per src→dst pair |
+| `detect_syn_scans` | `SYN_SCAN` | ≥5 SYN-only (SYN=1,ACK=0) ports per src→dst |
+| `detect_host_sweeps` | `HOST_SWEEP` | ≥5 distinct dst hosts per src+dport |
+| `detect_floods` | `FLOOD` | ≥100 pps in any 1-second bucket per src |
+| `detect_suspicious_ports` | `SUSP_PORT` | any traffic on `SUSPICIOUS_PORTS` dict |
+| `detect_icmp_anomalies` | `ICMP_FLOOD` / `ICMP_SWEEP` | ≥20 pps or ≥5 distinct hosts |
+| `detect_unencrypted_sensitive` | `CLEARTEXT` | any traffic on Telnet/FTP/POP3/IMAP/TFTP/Syslog |
+
+TCP flags byte bits: FIN=0x01 SYN=0x02 RST=0x04 PSH=0x08 ACK=0x10 URG=0x20
 
 ### Parser notes
 

@@ -14,7 +14,7 @@ from .model import Action, AddressFamily, Direction, ParsedConfig
 from .parser import parse_file
 from .topology import render_topology
 from .tracer import TracePacket, format_trace, suggest_counter_rule, trace
-from .pcap import read_pflog_pcap
+from .pcap import read_pflog_pcap, read_pcap
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -79,7 +79,30 @@ def main(argv: list[str] | None = None) -> None:
     p_trace.add_argument("--suggest-fix", action="store_true",
                          help="Suggest a rule to achieve the opposite verdict")
 
+    # --- analyze ---
+    p_analyze = sub.add_parser(
+        "analyze",
+        help="Aggregate stats and anomaly detection on any pcap (no pf.conf required).",
+    )
+    p_analyze.add_argument("pcap", help="Path to any pcap file (Ethernet, PFLOG, raw, etc.)")
+    p_analyze.add_argument("--top", type=int, default=10, metavar="N",
+                           help="Number of top entries to show (default: 10)")
+    p_analyze.add_argument("--scan-threshold", type=int, default=10, metavar="N",
+                           dest="scan_threshold",
+                           help="Distinct ports to flag as port scan (default: 10)")
+    p_analyze.add_argument("--sweep-threshold", type=int, default=5, metavar="N",
+                           dest="sweep_threshold",
+                           help="Distinct hosts to flag as host sweep (default: 5)")
+    p_analyze.add_argument("--flood-pps", type=int, default=100, metavar="N",
+                           dest="flood_pps",
+                           help="Packets/sec threshold for flood detection (default: 100)")
+
     args = parser.parse_args(argv)
+
+    # analyze does not require a pf.conf — dispatch before config parsing
+    if args.command == "analyze":
+        cmd_analyze(args)
+        return
 
     try:
         config = parse_file(args.config)
@@ -244,29 +267,49 @@ def cmd_nat(config: ParsedConfig) -> None:
 
 
 def cmd_pcap(config: ParsedConfig, args: argparse.Namespace) -> None:
-    import ipaddress
-
     try:
-        packets = read_pflog_pcap(args.pcap)
+        packets, _link_type = read_pcap(args.pcap)
     except (ValueError, OSError) as exc:
         print(f"Error reading pcap: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    if not packets:
-        print("No packets found in pcap file.")
+    good = []
+    for pkt in packets:
+        if pkt.parse_error:
+            print(f"  [warning] pkt {pkt.pkt_num}: {pkt.parse_error}, skipping",
+                  file=sys.stderr)
+        else:
+            good.append(pkt)
+
+    if not good:
+        print("No decodable packets found in pcap file.")
         return
 
-    for pkt in packets:
+    for pkt in good:
         # Header line — show IP version + transport proto + ports
         ip_ver = f"IPv{pkt.ip_version}"
         proto_label = f"{ip_ver}/{pkt.proto_name.upper()}"
         sport_str = f":{pkt.sport}" if pkt.sport is not None else ""
         dport_str = f":{pkt.dport}" if pkt.dport is not None else ""
+
+        # Location info (only PFLOG packets carry ifname/direction)
+        loc_parts: list[str] = []
+        if pkt.ifname:
+            loc_parts.append(f"on {pkt.ifname}")
+        if pkt.direction:
+            loc_parts.append(f"[{pkt.direction}]")
+        loc_str = (" " + " ".join(loc_parts)) if loc_parts else ""
+
+        # PFLOG verdict annotation
+        if pkt.pflog_action_name is not None:
+            pflog_str = f" (pflog: {pkt.pflog_action_name.upper()}, rule {pkt.rule_num})"
+        else:
+            pflog_str = ""
+
         print(
             f"Pkt {pkt.pkt_num}: {proto_label} "
-            f"{pkt.src_ip}{sport_str} -> {pkt.dst_ip}{dport_str} "
-            f"on {pkt.ifname} [{pkt.direction}] "
-            f"(pflog: {pkt.pflog_action_name.upper()}, rule {pkt.rule_num})"
+            f"{pkt.src_ip}{sport_str} -> {pkt.dst_ip}{dport_str}"
+            f"{loc_str}{pflog_str}"
         )
 
         # Build TracePacket — pass the real proto name; matcher handles unknowns correctly
@@ -277,7 +320,7 @@ def cmd_pcap(config: ParsedConfig, args: argparse.Namespace) -> None:
             src_port=pkt.sport,
             dst_port=pkt.dport,
             interface=pkt.ifname,
-            direction=pkt.direction,
+            direction=pkt.direction or "in",
         )
 
         result = trace(trace_pkt, config)
@@ -317,11 +360,14 @@ def _print_pcap_suggestions(pkt, result) -> None:
         dst_prefix = "/32"
 
     proto = pkt.proto_name
+    direction = pkt.direction or "in"
 
     def _build_rule(action: str) -> str:
-        parts = [action, pkt.direction, "quick", "on", pkt.ifname, af,
-                 "proto", proto,
-                 "from", f"{pkt.src_ip}{src_prefix}"]
+        parts = [action, direction, "quick"]
+        if pkt.ifname:
+            parts += ["on", pkt.ifname]
+        parts += [af, "proto", proto,
+                  "from", f"{pkt.src_ip}{src_prefix}"]
         if pkt.sport is not None:
             parts += ["port", str(pkt.sport)]
         parts += ["to", f"{pkt.dst_ip}{dst_prefix}"]
@@ -344,6 +390,31 @@ def _print_pcap_suggestions(pkt, result) -> None:
     if result.final_rule is not None:
         insert_line = result.final_rule.line_num
         print(f"  (To {opposite_action.upper()}: insert before line {insert_line})")
+
+
+def cmd_analyze(args: argparse.Namespace) -> None:
+    from .analyze import analyze_packets, format_report
+
+    try:
+        packets, link_type = read_pcap(args.pcap)
+    except (ValueError, OSError) as exc:
+        print(f"Error reading pcap: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not packets:
+        print("No packets found in pcap file.")
+        return
+
+    report = analyze_packets(
+        packets,
+        pcap_path=args.pcap,
+        link_type=link_type,
+        top_n=args.top,
+        scan_threshold=args.scan_threshold,
+        sweep_threshold=args.sweep_threshold,
+        flood_pps=args.flood_pps,
+    )
+    print(format_report(report, top_n=args.top))
 
 
 def cmd_trace(config: ParsedConfig, args: argparse.Namespace) -> None:
